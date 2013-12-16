@@ -3,20 +3,27 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
+
 // ----------------------------------------------------------------------------
+
 
 // Store [...]
 type Store interface {
 	// A Client is always returned -- it is nil only if ClientID is invalid.
 	// Use the error to indicate denied or unauthorized access.
 	GetClient(clientID string) (Client, error)
+	GetClientByCode(code string) (Client, error)
 	CreateAuthCode(r AuthCodeRequest) (string, error)
+        CreateAccessToken(r AccessTokenRequest) (string, error)
+        CreateRefreshToken(r AccessTokenRequest) (string, error)
 }
 
 // ----------------------------------------------------------------------------
@@ -36,7 +43,47 @@ type Client interface {
 	// validation rules are up to the server implementation.
 	// Ref: http://tools.ietf.org/html/draft-ietf-oauth-v2-25#section-3.1.2.2
 	ValidateRedirectURI(string) string
+	// Access token returned in exchange for the code
+	AccessToken() string
+	// Refresh token to renew Access token
+	RefreshToken() string
 }
+
+
+
+type CrowdSurgeClient struct{	
+	clientId string
+	clientType string
+	redirectURI string
+	validateRedirectURI string	
+	accessToken string
+	refreshToken string
+}
+
+func (client *CrowdSurgeClient) ID() string{
+	return client.clientId
+}
+
+func (client *CrowdSurgeClient) Type() string{
+	return client.clientType
+}
+
+func (client *CrowdSurgeClient) RedirectURI() string{
+	return client.redirectURI
+}
+
+func (client *CrowdSurgeClient) ValidateRedirectURI(uri string) string{
+	return client.validateRedirectURI
+}
+
+func (client *CrowdSurgeClient) AccessToken() string{
+	return client.accessToken
+}
+
+func (client *CrowdSurgeClient) RefreshToken() string{
+	return client.refreshToken
+}
+
 
 // ----------------------------------------------------------------------------
 
@@ -58,6 +105,57 @@ type AccessTokenRequest struct {
 
 // ----------------------------------------------------------------------------
 
+
+// ------------------- DEFINE A MONGODB Store ---------------------------------
+type MongoDBStore struct{
+
+
+}
+
+func (mdb *MongoDBStore) GetClient(clientID string) (Client, error){
+	var error error
+	client := &CrowdSurgeClient{clientId: "123456", clientType: "confidential", redirectURI: "http://localhost", validateRedirectURI: "http://localhost"}
+	return client, error
+
+}
+
+func (mdb *MongoDBStore) GetClientByCode(code string) (Client, error){
+	var error error
+	client := &CrowdSurgeClient{clientId: "123456", clientType: "confidential", redirectURI: "http://localhost", validateRedirectURI: "http://localhost"}
+	return client, error
+
+}
+
+func (mdb *MongoDBStore) CreateAuthCode(r AuthCodeRequest) (string, error){
+	var error error
+	salt := time.Now().UTC().Nanosecond()
+	strSalt := string(salt)
+	data := []byte(strSalt + "this is an awesomly long code. we should try to make it longer")
+	code := base64.StdEncoding.EncodeToString(data)
+	fmt.Println(code)
+	return code, error
+}
+
+func (mdb *MongoDBStore) CreateAccessToken(r AccessTokenRequest)(string, error){
+	var error error
+	salt := time.Now().UTC().Nanosecond()
+	strSalt := string(salt)
+	data := []byte(strSalt + "this is your access token. we should try to make it longer")
+	// Create Access Token
+	accessToken := base64.StdEncoding.EncodeToString(data)
+	return accessToken, error
+
+}
+
+func (mdb *MongoDBStore) CreateRefreshToken(r AccessTokenRequest) (string, error){
+	var error error
+	// Create Refresh Token
+	salt := time.Now().UTC().Nanosecond()
+	strSalt := string(salt)
+	data := []byte(strSalt + "this is your refresh. we should try to make it longer")
+	refreshToken := base64.StdEncoding.EncodeToString(data)
+	return refreshToken, error
+}
 // NewServer [...]
 func NewServer() *Server {
 	return &Server{
@@ -79,11 +177,12 @@ func (s *Server) RegisterErrorURI(code errorCode, uri string) {
 // NewError [...]
 func (s *Server) NewError(code errorCode, description string) ServerError {
 	return NewServerError(code, description, s.errorURIs[code])
-}
 
+}
 // NewAuthCodeRequest [...]
 func (s *Server) NewAuthCodeRequest(r *http.Request) AuthCodeRequest {
 	v := r.URL.Query()
+	fmt.Println(v)
 	return AuthCodeRequest{
 		ClientID:     v.Get("client_id"),
 		ResponseType: v.Get("response_type"),
@@ -93,11 +192,22 @@ func (s *Server) NewAuthCodeRequest(r *http.Request) AuthCodeRequest {
 	}
 }
 
+// NewAccessTokenRequest [...]
+func (s *Server) NewAccessTokenRequest(r *http.Request) AccessTokenRequest {
+	v := r.URL.Query()
+	fmt.Println(v)
+	return AccessTokenRequest{
+		RedirectURI:  v.Get("redirect_uri"),
+		Code:         v.Get("code"),
+		GrantType:    v.Get("grant_type"),
+	}
+}
+
 // HandleAuthCodeRequest [...]
 func (s *Server) HandleAuthCodeRequest(w http.ResponseWriter, r *http.Request) error {
 	// 1. Get all request values.
 	req := s.NewAuthCodeRequest(r)
-
+	fmt.Println("Reqs", req)
 	// 2. Validate required parameters.
 	var err error
 	if req.ClientID == "" {
@@ -112,7 +222,6 @@ func (s *Server) HandleAuthCodeRequest(w http.ResponseWriter, r *http.Request) e
 			fmt.Sprintf("The response type %q is not supported.",
 			req.ResponseType))
 	}
-
 	// 3. Load client and validate the redirection URI.
 	var redirectURI *url.URL
 	if req.ClientID != "" {
@@ -123,6 +232,7 @@ func (s *Server) HandleAuthCodeRequest(w http.ResponseWriter, r *http.Request) e
 				err = s.NewError(ErrorCodeInvalidRequest,
 					"The \"client_id\" parameter is invalid.")
 			}
+			fmt.Println("bad client id")
 		} else {
 			if u, uErr := validateRedirectURI(
 				client.ValidateRedirectURI(req.RedirectURI)); uErr == nil {
@@ -174,7 +284,100 @@ func (s *Server) HandleAuthCodeRequest(w http.ResponseWriter, r *http.Request) e
 		)
 	}
 	redirectURI.RawQuery = query.Encode()
-	http.Redirect(w, r, redirectURI.String(), 302)
+	//http.Redirect(w, r, redirectURI.String(), 302)
+	fmt.Fprint(w, "Access Code: " + code)
+	return nil
+}
+
+// HandleAccessTokenRequest [...]
+func (s *Server) HandleAccessTokenRequest(w http.ResponseWriter, r *http.Request) error {
+	// 1. Get all request values.
+	req := s.NewAccessTokenRequest(r)
+	fmt.Println("Reqs", req)
+	// 2. Validate required parameters.
+	var err error
+	if req.Code == "" {
+		// Missing Code: no redirect.
+		err = s.NewError(ErrorCodeInvalidRequest,
+			"The \"code\" parameter is missing.")
+	} else if req.GrantType != "authorization_code" {
+		err = s.NewError(ErrorCodeInvalidRequest,
+			"The \"grant_type\" parameter is invalid.")
+	} else if req.RedirectURI == "" {
+		err = s.NewError(ErrorCodeUnsupportedResponseType,
+			"The \"redirect_uri\" parameter is missing")
+	}
+	// 3. Load client and validate the redirection URI.
+	var redirectURI *url.URL
+	if req.Code != "" {
+		client, clientErr := s.Store.GetClientByCode(req.Code)
+		if client == nil {
+			// Invalid ClientID: no redirect.
+			if err == nil {
+				err = s.NewError(ErrorCodeInvalidRequest,
+					"The \"client_id\" parameter is invalid.")
+			}
+			fmt.Println("bad client id")
+		} else {
+			if u, uErr := validateRedirectURI(
+				client.ValidateRedirectURI(req.RedirectURI)); uErr == nil {
+				redirectURI = u
+			} else {
+				// Missing, mismatching or invalid URI: no redirect.
+				if err == nil {
+					if req.RedirectURI == "" {
+						err = s.NewError(ErrorCodeInvalidRequest,
+							"Missing redirection URI.")
+					} else {
+						err = s.NewError(ErrorCodeInvalidRequest, uErr.Error())
+					}
+				}
+			}
+			if clientErr != nil && err == nil {
+				// Client was not authorized.
+				err = clientErr
+			}
+		}
+	}
+
+	// 4. If no valid redirection URI was set, abort.
+	if redirectURI == nil {
+		// An error occurred because client_id or redirect_uri are invalid:
+		// the caller must display an error page and don't redirect.
+		return err
+	}
+
+	// 5. Add the response data to the URL and redirect.
+	query := redirectURI.Query()
+	//setQueryPairs(query, "state", req.State)
+	var accessToken, refreshToken string
+	if err == nil {
+		accessToken, err = s.Store.CreateAccessToken(req)
+		refreshToken, err = s.Store.CreateRefreshToken(req)
+	}
+	if err == nil {
+		// Success.
+		query.Set("access_token", accessToken)
+		query.Set("refresh_token", refreshToken)
+	} else {
+		e, ok := err.(ServerError)
+		if !ok {
+			e = s.NewError(ErrorCodeServerError, e.Error())
+		}
+		setQueryPairs(query,
+			"error", string(e.Code()),
+			"error_description", e.Description(),
+			"error_uri", e.URI(),
+		)
+	}
+	redirectURI.RawQuery = query.Encode()
+	//http.Redirect(w, r, redirectURI.String(), 302)
+        response := make(map[string]string)
+	response["access_token"] = accessToken
+	response["refresh_token"] = refreshToken
+	response["token_type"] = "bearer"
+	output, _ := json.MarshalIndent(response, "", " ")
+	fmt.Fprint(w, string(output))
 	return nil
 }
 
